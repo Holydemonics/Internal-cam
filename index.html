@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Interval Cam</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#6b6b6b;--card:#f2f2f2;--accent:#d9381e;--onaccent:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141414;--fg:#f0f0f0;--muted:#9a9a9a;--card:#222;--accent:#ef5a42;--onaccent:#fff}}
+:root[data-theme="dark"]{--bg:#141414;--fg:#f0f0f0;--muted:#9a9a9a;--card:#222;--accent:#ef5a42;--onaccent:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:640px;margin-inline:auto}
+h1{font-size:1.2rem;margin:0 0 12px}
+.view{position:relative;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover;display:block}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
+.flash.on{opacity:.7;transition:none}
+.row{display:flex;gap:8px;margin:12px 0;align-items:center;flex-wrap:wrap}
+button{font:inherit;border:0;border-radius:10px;padding:12px 18px;background:var(--card);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);color:var(--onaccent);font-weight:600;flex:1}
+.status{color:var(--muted);font-size:.9rem;margin-left:auto}
+.msg{color:var(--accent);font-size:.9rem;margin:8px 0}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;background:var(--card)}
+.hint{color:var(--muted);font-size:.8rem;margin:8px 0}
+</style>
+</head>
+<body>
+<h1>Interval Cam</h1>
+<div class="view"><video id="v" playsinline muted autoplay></video><div class="flash" id="f"></div></div>
+<div class="row">
+  <button class="primary" id="go">Start</button>
+  <button id="flip">Flip</button>
+  <span class="status" id="st">0 photos</span>
+</div>
+<div class="msg" id="msg"></div>
+<div class="row"><button id="zip">Save all as zip</button><button id="clear">Clear photos</button></div>
+<div class="grid" id="grid"></div>
+<p class="hint">Press and hold a photo to save it. Keep this screen open while capturing.</p>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+(function(){
+  var INTERVAL=3000;
+  var v=document.getElementById('v'),go=document.getElementById('go'),flip=document.getElementById('flip'),
+      st=document.getElementById('st'),msg=document.getElementById('msg'),grid=document.getElementById('grid'),
+      flash=document.getElementById('f'),clear=document.getElementById('clear');
+  var stream=null,timer=null,facing='environment',count=0,wake=null,photos=[];
+  var canvas=document.createElement('canvas');
+
+  function say(t){msg.textContent=t||'';}
+  function update(){st.textContent=count+(count===1?' photo':' photos');}
+
+  async function openCamera(){
+    if(stream){stream.getTracks().forEach(function(t){t.stop();});}
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:1920},height:{ideal:1080}},audio:false});
+    v.srcObject=stream;
+    await v.play().catch(function(){});
+  }
+
+  function setDpi(u,dpi){
+    var hi=dpi>>8,lo=dpi&255;
+    if(u[2]===0xFF&&u[3]===0xE0&&u[6]===0x4A&&u[7]===0x46){
+      u[13]=1;u[14]=hi;u[15]=lo;u[16]=hi;u[17]=lo;return u;
+    }
+    var h=[0xFF,0xE0,0,16,0x4A,0x46,0x49,0x46,0,1,1,1,hi,lo,hi,lo,0,0];
+    var o=new Uint8Array(u.length+h.length);
+    o.set(u.subarray(0,2),0);o.set(h,2);o.set(u.subarray(2),2+h.length);
+    return o;
+  }
+
+  function snap(){
+    if(!v.videoWidth)return;
+    canvas.width=v.videoWidth;canvas.height=v.videoHeight;
+    canvas.getContext('2d').drawImage(v,0,0);
+    var name='photo-'+String(++count).padStart(4,'0')+'.jpg';
+    update();
+    canvas.toBlob(function(b){
+      if(!b)return;
+      b.arrayBuffer().then(function(buf){
+        var out=new Blob([setDpi(new Uint8Array(buf),300)],{type:'image/jpeg'});
+        photos.push({name:name,blob:out});
+        var img=new Image();
+        img.src=URL.createObjectURL(out);
+        grid.insertBefore(img,grid.firstChild);
+      });
+    },'image/jpeg',0.92);
+    flash.classList.add('on');
+    setTimeout(function(){flash.classList.remove('on');},60);
+  }
+
+  async function start(){
+    say('');
+    try{
+      if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){throw new Error('Camera is not supported here.');}
+      await openCamera();
+    }catch(e){
+      say('Could not open the camera: '+(e&&e.message?e.message:e));
+      return;
+    }
+    try{if(navigator.wakeLock){wake=await navigator.wakeLock.request('screen');}}catch(e){}
+    snap();
+    timer=setInterval(snap,INTERVAL);
+    go.textContent='Stop';
+  }
+
+  function stop(){
+    clearInterval(timer);timer=null;
+    if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
+    v.srcObject=null;
+    try{if(wake){wake.release();wake=null;}}catch(e){}
+    go.textContent='Start';
+  }
+
+  go.onclick=function(){if(timer){stop();}else{start();}};
+  flip.onclick=async function(){
+    facing=facing==='environment'?'user':'environment';
+    if(timer){try{await openCamera();}catch(e){say('Could not switch camera.');}}
+  };
+  clear.onclick=function(){
+    grid.querySelectorAll('img').forEach(function(i){URL.revokeObjectURL(i.src);});
+    grid.innerHTML='';photos=[];count=0;update();
+  };
+  document.getElementById('zip').onclick=async function(){
+    if(!photos.length){say('No photos to save yet.');return;}
+    if(typeof JSZip==='undefined'){say('Zip is unavailable here.');return;}
+    var dl=null;
+    try{dl=(window.claude&&window.claude.use)?await window.claude.use('downloads'):null;}catch(e){}
+    if(!dl){say('Saving files is unavailable here. Press and hold a photo instead.');return;}
+    say('');
+    try{
+      var z=new JSZip();
+      photos.forEach(function(p){z.file(p.name,p.blob);});
+      var blob=await z.generateAsync({type:'blob',compression:'STORE'});
+      await dl.save({filename:'interval-cam.zip',data:blob});
+    }catch(e){
+      if(!e||e.code!=='declined'){say('Could not save the zip.');}
+    }
+  };
+  document.addEventListener('visibilitychange',function(){if(document.hidden&&timer){stop();}});
+})();
+</script>
+</body>
+</html>
